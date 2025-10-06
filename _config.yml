@@ -4,7 +4,7 @@ theme: minima
 author: Harshal Patil
 github_username: harche
 url: "https://harche.github.io"
-baseurl: "/blog"
+baseurl: ""
 minima:
   social_links:
     - platform: github

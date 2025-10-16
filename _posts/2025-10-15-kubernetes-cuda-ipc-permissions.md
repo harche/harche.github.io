@@ -63,33 +63,7 @@ The device plugin isolates GPUs per pod. I verified with `strace`, Bus-Id checks
 
 ### Producer pod (example)
 
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: cuda-ipc-producer-simple
-spec:
-  hostIPC: false
-  hostPID: true
-  containers:
-  - name: producer
-    image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-    resources:
-      limits:
-        nvidia.com/gpu: 1
-    securityContext:
-      privileged: true
-      capabilities:
-        add: ["IPC_LOCK"]
-    volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-  volumes:
-  - name: shared-volume
-    hostPath:
-      path: /tmp/cuda-ipc-shared
-      type: DirectoryOrCreate
-```
+The full manifests live in the repo: [shared-volume-example/producer-pod.yaml](https://github.com/harche/cuda-ipc-debugging/blob/main/shared-volume-example/producer-pod.yaml) and the matching [consumer-pod.yaml](https://github.com/harche/cuda-ipc-debugging/blob/main/shared-volume-example/consumer-pod.yaml).
 
 ### When I would reach for this
 
@@ -132,57 +106,11 @@ Both containers can still use straightforward code like `cudaSetDevice(0)` inter
 
 ### ResourceClaim (example)
 
-```yaml
-apiVersion: resource.k8s.io/v1beta1
-kind: ResourceClaim
-metadata:
-  namespace: cuda-ipc-dra
-  name: shared-dual-gpus
-spec:
-  devices:
-    requests:
-    - name: gpu-1
-      deviceClassName: gpu.nvidia.com
-    - name: gpu-2
-      deviceClassName: gpu.nvidia.com
-```
+Full YAML: [dra-shared-gpu-example/resource-claim.yaml](https://github.com/harche/cuda-ipc-debugging/blob/main/dra-shared-gpu-example/resource-claim.yaml).
 
 ### Producer pod (sketch)
 
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  namespace: cuda-ipc-dra
-  name: cuda-ipc-producer-dra
-spec:
-  hostIPC: false
-  hostPID: true
-  containers:
-  - name: producer
-    image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-    env:
-    - name: CUDA_VISIBLE_DEVICES
-      value: "0"
-    resources:
-      claims:
-      - name: shared-gpus
-    securityContext:
-      privileged: false
-      capabilities:
-        add: ["IPC_LOCK"]
-    volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-  resourceClaims:
-  - name: shared-gpus
-    resourceClaimName: shared-dual-gpus
-  volumes:
-  - name: shared-volume
-    hostPath:
-      path: /tmp/cuda-ipc-shared-dra
-      type: DirectoryOrCreate
-```
+Full manifest: [dra-shared-gpu-example/producer-pod.yaml](https://github.com/harche/cuda-ipc-debugging/blob/main/dra-shared-gpu-example/producer-pod.yaml). The consumer pod for this scenario is adjacent in the same directory.
 
 ### When I would use this
 
@@ -237,43 +165,7 @@ It gives each container in the pod the process visibility CUDA IPC needs, withou
 
 ### Sketch YAML
 
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: cuda-ipc-concurrent-pod
-spec:
-  hostIPC: false
-  shareProcessNamespace: true
-  containers:
-  - name: producer
-    image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-    resources:
-      limits:
-        nvidia.com/gpu: 1
-    securityContext:
-      privileged: true
-      capabilities:
-        add: ["IPC_LOCK"]
-    volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-  - name: consumer
-    image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-    resources:
-      limits:
-        nvidia.com/gpu: 1
-    securityContext:
-      privileged: true
-      capabilities:
-        add: ["IPC_LOCK"]
-    volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-  volumes:
-  - name: shared-volume
-    emptyDir: {}
-```
+For the full pod spec, see [single-pod-example/cuda-ipc-pod-concurrent.yaml](https://github.com/harche/cuda-ipc-debugging/blob/main/single-pod-example/cuda-ipc-pod-concurrent.yaml).
 
 ### When I would use this
 
@@ -329,63 +221,10 @@ Then in code:
 
 ### ResourceClaim and pod (example)
 
-```yaml
-apiVersion: resource.k8s.io/v1beta1
-kind: ResourceClaim
-metadata:
-  namespace: cuda-ipc-single-dra
-  name: single-pod-dual-gpus
-spec:
-  devices:
-    requests:
-    - name: gpu-1
-      deviceClassName: gpu.nvidia.com
-    - name: gpu-2
-      deviceClassName: gpu.nvidia.com
----
-apiVersion: v1
-kind: Pod
-metadata:
-  namespace: cuda-ipc-single-dra
-  name: cuda-ipc-single-pod-dra
-spec:
-  shareProcessNamespace: true
-  containers:
-  - name: producer
-    image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-    env:
-    - name: CUDA_VISIBLE_DEVICES
-      value: "0,1"
-    resources:
-      claims:
-      - name: shared-gpus
-    securityContext:
-      capabilities:
-        add: ["IPC_LOCK"]
-    volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-  - name: consumer
-    image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-    env:
-    - name: CUDA_VISIBLE_DEVICES
-      value: "0,1"
-    resources:
-      claims:
-      - name: shared-gpus
-    securityContext:
-      capabilities:
-        add: ["IPC_LOCK"]
-    volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-  resourceClaims:
-  - name: shared-gpus
-    resourceClaimName: single-pod-dual-gpus
-  volumes:
-  - name: shared-volume
-    emptyDir: {}
-```
+The full manifests are here:
+
+- [single-pod-dra-example/resource-claim.yaml](https://github.com/harche/cuda-ipc-debugging/blob/main/single-pod-dra-example/resource-claim.yaml)
+- [single-pod-dra-example/single-pod-dra.yaml](https://github.com/harche/cuda-ipc-debugging/blob/main/single-pod-dra-example/single-pod-dra.yaml)
 
 ### When I would use this
 

@@ -1,9 +1,7 @@
 ---
-layout: post
 title: "Dynamic GPU Slicing with Red Hat OpenShift and NVIDIA MIG"
 description: "On-demand GPU resource allocation for flexible AI/ML workloads"
 date: 2025-10-14
-author: Harshal Patil
 ---
 
 *Author: [Harshal Patil](https://github.com/harche){:target="_blank" rel="noopener"}*

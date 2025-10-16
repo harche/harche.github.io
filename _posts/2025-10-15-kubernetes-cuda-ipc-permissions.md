@@ -1,9 +1,7 @@
 ---
-layout: post
 title: "Kubernetes CUDA IPC: The Permissions I Wish I Knew"
 description: "Field-tested configurations and security tradeoffs for CUDA IPC on Kubernetes"
 date: 2025-10-15
-author: Harshal Patil
 ---
 
 *Author: [Harshal Patil](https://github.com/harche){:target="_blank" rel="noopener"}*

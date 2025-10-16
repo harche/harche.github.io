@@ -1,9 +1,7 @@
 ---
-layout: post
 title: "Keeping Distributed Jobs in Lockstep"
 description: "How LWS and Volcano enforce all-or-nothing scheduling"
 date: 2025-10-03
-author: Harshal Patil
 ---
 
 *Author: [Harshal Patil](https://github.com/harche){:target="_blank" rel="noopener"}*

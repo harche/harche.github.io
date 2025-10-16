@@ -1,14 +1,53 @@
 title: "Harshal's Notes"
+name: "Harshal Patil"
 description: "Deep dives and demos from the lab"
-theme: minima
-author: Harshal Patil
-github_username: harche
+remote_theme: "mmistakes/minimal-mistakes"
+minimal_mistakes_skin: "default"
+locale: "en-US"
 url: "https://harche.github.io"
 baseurl: ""
-minima:
-  social_links:
-    - platform: github
-      user_url: https://github.com/harche
+repository: "harche/harche.github.io"
+
+author:
+  name: "Harshal Patil"
+  bio: "Kubernetes, GPUs, and pragmatic platform engineering."
+  links:
+    - label: "GitHub"
+      icon: "fab fa-fw fa-github"
+      url: "https://github.com/harche"
+
+footer:
+  links:
+    - label: "GitHub"
+      icon: "fab fa-fw fa-github"
+      url: "https://github.com/harche"
+
+paginate: 5
+paginate_path: "/page:num/"
+
+search: true
+
 plugins:
   - jekyll-feed
   - jekyll-sitemap
+  - jekyll-include-cache
+
+defaults:
+  - scope:
+      path: ""
+      type: posts
+    values:
+      layout: single
+      author_profile: true
+      toc: true
+      toc_label: "On this page"
+      toc_sticky: true
+  - scope:
+      path: ""
+      type: pages
+    values:
+      layout: single
+      author_profile: true
+
+include:
+  - _pages

@@ -8,10 +8,6 @@ author: Harshal Patil
 
 *Author: [Harshal Patil](https://github.com/harche){:target="_blank" rel="noopener"}*
 
----
-
-# CUDA IPC on Kubernetes: the permissions I wish I knew
-
 I went down a rabbit hole trying to get CUDA Inter-Process Communication (IPC) working reliably in Kubernetes, without throwing security out the window. I tested four real setups, flipped every permission I could, broke things on purpose, and kept notes on what actually mattered.
 
 This post is the write-up I wish I had at the start. It keeps all the gritty details, but tells the story like a human who has had `cudaIpcOpenMemHandle()` stare back with "invalid argument" at 2 a.m.

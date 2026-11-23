@@ -1,0 +1,694 @@
+---
+title: "Notes on Kubernetes issue 144131: hugepages and the pod memory limit"
+description: "What happens to pods when cgroup v2 counts hugepages against the memory limit, why raising the limit is not the answer, and how to get the old behaviour back."
+date: 2026-11-23
+classes: wide
+excerpt: "What happens to pods when cgroup v2 counts hugepages against the memory limit, why raising the limit is not the answer, and how to get the old behaviour back."
+---
+<style>
+.hp p { margin: 0; max-width: 62ch; }
+.hp .lede { font-size: 1.25rem; }
+.hp .small { color: var(--muted); font-size: 0.95rem; }
+.hp ul.quotes { margin-top: 6px; gap: 4px; font-size: 0.95rem; color: var(--muted); list-style: none; padding-left: 0.4em; border-left: 3px solid var(--line); }
+.hp ul.quotes li { padding-left: 0.6em; }
+.hp header, .hp section { display: flex; flex-direction: column; gap: 16px; }
+.hp .legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 0.95rem; color: var(--muted); }
+.hp .legend span { display: inline-flex; align-items: center; gap: 8px; }
+.hp .sw { width: 18px; height: 14px; border-radius: 3px; display: inline-block; }
+.hp .sw.mem { background: var(--mem); }
+.hp .sw.huge { background: var(--huge); }
+.hp .sw.lid { background: var(--ink); height: 4px; border-radius: 2px; }
+.hp .sw.over { background: color-mix(in srgb, var(--bad) 18%, transparent); border: 1.5px dashed var(--bad); }
+.hp figure { margin: 0; }
+.hp .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.hp .scroll { overflow-x: auto; }
+.hp .scroll svg { min-width: 520px; }
+.hp svg { display: block; width: 100%; height: auto; max-width: 100%; }
+.hp figcaption { color: var(--muted); font-size: 0.95rem; margin-top: 10px; }
+.hp .cases { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.hp .case { display: flex; flex-direction: column; gap: 8px; }
+.hp .case svg { max-width: 300px; margin: 0 auto; }
+.hp .case figcaption { margin: 0; color: var(--ink); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.hp .chip { display: inline-block; font-size: 0.82rem; font-weight: 700; padding: 2px 10px; border-radius: 999px; border: 1.5px solid currentColor; white-space: nowrap; }
+.hp .chip.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.hp .chip.ok { color: var(--good); background: color-mix(in srgb, var(--good) 10%, transparent); }
+.hp .chip.note { color: var(--muted); }
+.hp svg text { font-family: inherit; font-size: 13px; fill: var(--ink); }
+.hp svg .b { font-weight: 700; }
+.hp svg .m { fill: var(--muted); }
+.hp svg .r { fill: var(--bad); font-weight: 700; }
+.hp svg .title { font-family: inherit; font-size: 15px; font-weight: 600; }
+.hp .jar { fill: none; stroke: var(--ink); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.hp .lidline { stroke: var(--ink); stroke-width: 5; stroke-linecap: round; }
+.hp .spec { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.hp .f-mem { fill: var(--mem); }
+.hp .f-extra { fill: var(--mem); fill-opacity: 0.5; }
+.hp .f-huge { fill: var(--huge); }
+.hp .f-copy { fill: var(--huge); fill-opacity: 0.4; stroke: var(--huge); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.hp .f-over { fill: var(--bad); fill-opacity: 0.16; stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.hp .arrow { stroke: var(--ink); stroke-width: 2; fill: none; }
+.hp .st-on { fill: var(--bad); fill-opacity: 0.16; stroke: var(--bad); stroke-width: 1.5; }
+.hp .st-off { fill: var(--good); fill-opacity: 0.16; stroke: var(--good); stroke-width: 1.5; }
+.hp svg .g { fill: var(--good); font-weight: 700; }
+.hp pre.panel { margin: 0; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.55; }
+.hp .head { fill: var(--ink); }
+.hp .node { fill: var(--surface); stroke: var(--ink); stroke-width: 1.5; }
+.hp .node.fixed { stroke: var(--good); stroke-width: 2; }
+.hp .nest { border: 2px solid var(--ink); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: color-mix(in srgb, var(--ink) 3%, var(--surface)); }
+.hp .nest.wrong { border-color: var(--bad); }
+.hp .nest-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.hp .nest-name { font-family: inherit; font-weight: 800; font-size: 1.1rem; }
+.hp .nest-val { flex: 1 1 220px; font-size: 0.98rem; }
+.hp .bar { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.hp .bar > div { min-width: 3px; }
+.hp .bar .alloc { background: color-mix(in srgb, var(--mem) 35%, var(--surface)); flex: 11313; }
+.hp .bar .pool { background: var(--huge); flex: 512; }
+.hp .bar .evict { background: var(--muted); flex: 100; }
+.hp .keys { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 0.92rem; color: var(--muted); margin-top: 8px; }
+.hp .keys span { display: inline-flex; align-items: center; gap: 6px; }
+.hp .keys i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.hp .tablewrap { overflow-x: auto; }
+.hp table { border-collapse: collapse; width: 100%; font-size: 0.98rem; min-width: 460px; }
+.hp th, .hp td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.hp th { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; }
+.hp tr:last-child td { border-bottom: 0; }
+.hp .meter { display: flex; flex-direction: column; gap: 14px; }
+.hp .meter-row { display: grid; grid-template-columns: minmax(96px, 150px) 1fr; gap: 12px; align-items: center; }
+.hp .meter-label { font-size: 0.95rem; }
+.hp .track { position: relative; height: 30px; background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 6px; border-right: 4px solid var(--ink); display: flex; overflow: hidden; }
+.hp .track .seg-mem { background: var(--mem); width: 10.4%; }
+.hp .track .seg-huge { background: var(--huge); width: 66.7%; }
+.hp .meter-note { font-size: 0.92rem; color: var(--muted); text-align: right; }
+.hp .track-wrap { position: relative; }
+.hp .track.plain { border-right: 0; }
+.hp .mark { position: absolute; top: -5px; bottom: -5px; width: 3px; background: var(--ink); border-radius: 2px; }
+.hp ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; max-width: 62ch; }
+/* Page components for this post, scoped so they do not touch the theme. Colours follow the dark skin. */
+.hp {
+  --bg: #252a34; --surface: #2d333f; --ink: #eaeaea; --muted: #a8afba; --line: #51555d;
+  --mem: #4fb0c2; --huge: #f0a742; --bad: #f2695e; --good: #5cc48a;
+  --font-mono: Monaco, Consolas, "Lucida Console", monospace;
+  display: flex; flex-direction: column; gap: 8px; font-variant-numeric: tabular-nums;
+}
+.hp * { box-sizing: border-box; }
+.hp header, .hp section { margin: 0; }
+.hp h2 { margin-top: 1.6em; }
+.hp h3 { margin: 1.4em 0 0.2em; }
+.hp h4 { margin: 0.8em 0 0; font-size: 1em; }
+.hp figure { display: block; margin: 0; line-height: 1.5; }
+.hp figure > svg, .hp .scroll > svg { margin: 0; }
+.hp figcaption { font-family: inherit; }
+.hp table { display: table; margin: 0; font-size: 0.86rem; }
+.hp th, .hp td { border-bottom: 1px solid var(--line); background: none; }
+.hp thead, .hp th { background: none; border-bottom: 1px solid var(--line); }
+.hp ul { margin: 0; padding-left: 1.2em; }
+.hp li { font-size: 1em; }
+.hp p, .hp li { max-width: none; }
+.hp code { font-family: var(--font-mono); font-size: 0.8em; background: #343942; padding: 0.1em 0.35em; border-radius: 4px; white-space: nowrap; }
+.hp pre.panel { background: var(--surface); color: var(--ink); }
+.hp a:focus-visible { outline: 2px solid var(--mem); outline-offset: 2px; }
+</style>
+<div class="hp">
+
+<header>
+  <p><em>Author: <a href="https://github.com/harche" target="_blank" rel="noopener">Harshal Patil</a></em></p>
+  <p>These are my notes for <a href="https://github.com/kubernetes/kubernetes/issues/144131">kubernetes/kubernetes issue 144131</a>, with every test behind them.</p>
+  <p class="lede">Linux 6.7 <a href="https://git.kernel.org/torvalds/c/8cba9576df60">added</a> a cgroup v2 mount option, <a href="https://github.com/torvalds/linux/blob/v7.0/Documentation/admin-guide/cgroup-v2.rst?plain=1#L220-L225"><code>memory_hugetlb_accounting</code></a>, that makes the memory controller count the hugepages a cgroup uses on top of its ordinary memory. The option is opt-in, but <a href="https://github.com/systemd/systemd/pull/39486">systemd 259 turns it on</a> for every machine. The kubelet still sets a pod's memory limit as if hugepages were counted separately, so pods that use both get killed or hang. Raising the limit makes them run but changes what the limit means, so the plan is to turn the option off on the node now and add a kernel switch for pods later.</p>
+</header>
+
+<section>
+  <h2 id="the-problem">The problem</h2>
+</section>
+
+<section>
+  <h3 id="a-pod-gets-two-jars">A pod gets two jars</h3>
+  <p>Ordinary memory comes in tiny pages. Hugepages are big blocks the node sets aside in advance. A pod <a href="https://kubernetes.io/docs/tasks/manage-hugepages/scheduling-hugepages/">asks for each one separately</a>: here <code>memory: 96Mi</code> and <code>hugepages-2Mi: 64Mi</code>.</p>
+  <figure class="panel">
+    <div class="scroll">
+      <svg viewBox="0 0 600 280" role="img" aria-label="Two separate jars. The ordinary memory jar has a lid at 96 and holds 80. The hugepage jar has a lid at 64 and holds 64.">
+        <text class="title" x="120" y="24" text-anchor="middle">Ordinary memory</text>
+        <rect class="f-mem" x="72" y="160" width="96" height="100"/>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="lidline" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="b" x="52" y="144" text-anchor="end">lid 96</text>
+        <text x="186" y="214">80 used</text>
+
+        <text class="title" x="440" y="24" text-anchor="middle">Hugepages</text>
+        <rect class="f-huge" x="394" y="241" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="394" y="221" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="394" y="201" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="394" y="181" width="92" height="18" rx="2"/>
+        <path class="jar" d="M390 40V260H490V40"/>
+        <line class="lidline" x1="380" x2="500" y1="180" y2="180"/>
+        <text class="b" x="372" y="184" text-anchor="end">lid 64</text>
+        <text x="506" y="224">64 used</text>
+      </svg>
+    </div>
+    <figcaption>The old world. Each jar has its own lid and its own count. The memory lid is <code>memory.max</code>; the hugepage lid is <code>hugetlb.2MB.max</code>. This pod fits in both.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h3 id="the-new-rule-hugepages-fill-both-jars">The new rule: hugepages fill both jars</h3>
+  <p>With the cgroup mount option <code>memory_hugetlb_accounting</code>, every hugepage the pod touches is counted in the memory jar too. The pod asked for 96 of ordinary memory. Now only 32 fits.</p>
+  <figure class="panel">
+    <div class="scroll">
+      <svg viewBox="0 0 600 280" role="img" aria-label="The same two jars. The 64 of hugepages is now also counted in the ordinary memory jar, leaving 32 of room under its lid of 96.">
+        <defs>
+          <marker id="arr-copy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path class="head" d="M0 0L10 5L0 10z"/>
+          </marker>
+        </defs>
+        <text class="title" x="120" y="24" text-anchor="middle">Ordinary memory</text>
+        <rect class="f-copy" x="74" y="241" width="92" height="18" rx="2"/>
+        <rect class="f-copy" x="74" y="221" width="92" height="18" rx="2"/>
+        <rect class="f-copy" x="74" y="201" width="92" height="18" rx="2"/>
+        <rect class="f-copy" x="74" y="181" width="92" height="18" rx="2"/>
+        <text class="b" x="120" y="165" text-anchor="middle">32 left</text>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="lidline" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="b" x="52" y="144" text-anchor="end">lid 96</text>
+
+        <line class="arrow" x1="382" y1="220" x2="188" y2="220" marker-end="url(#arr-copy)"/>
+        <text x="285" y="211" text-anchor="middle">also counted here</text>
+
+        <text class="title" x="440" y="24" text-anchor="middle">Hugepages</text>
+        <rect class="f-huge" x="394" y="241" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="394" y="221" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="394" y="201" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="394" y="181" width="92" height="18" rx="2"/>
+        <path class="jar" d="M390 40V260H490V40"/>
+        <line class="lidline" x1="380" x2="500" y1="180" y2="180"/>
+        <text class="b" x="372" y="184" text-anchor="end">lid 64</text>
+        <text x="506" y="224">64 used</text>
+      </svg>
+    </div>
+    <figcaption>The same 64 of hugepages now takes room under the memory lid. The lid has not moved.</figcaption>
+  </figure>
+  <ul>
+    <li><strong>Who turned it on:</strong> the kernel has offered the option <a href="https://git.kernel.org/torvalds/c/8cba9576df60">since 6.7</a>. systemd 259 <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L45-L65">switches it on at boot</a>. Ubuntu 26.04 ships both.</li>
+    <li><strong>Only touched pages count.</strong> <a href="https://github.com/torvalds/linux/blob/v7.0/Documentation/admin-guide/cgroup-v2.rst?plain=1#L229-L237">The kernel documentation</a> says the pool belongs to nobody until a page is used. Reserving hugepages without using them adds nothing to the memory jar.</li>
+  </ul>
+</section>
+
+<section>
+  <h3 id="the-pod-overflows-a-jar-it-sized-correctly">The pod overflows a jar it sized correctly</h3>
+  <p>Three pods, all with the same two limits, all inside both of them as Kubernetes defines them. The memory lid is still 96.</p>
+  <div class="cases">
+    <figure class="panel case">
+      <svg viewBox="0 0 280 280" role="img" aria-label="Jar with lid at 96. 32 of hugepages, then 80 of ordinary memory reaches 112, 16 over the lid.">
+        <rect class="f-huge" x="74" y="241" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="74" y="221" width="92" height="18" rx="2"/>
+        <rect class="f-mem" x="72" y="140" width="96" height="80"/>
+        <rect class="f-over" x="72" y="120" width="96" height="20"/>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="lidline" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="b" x="52" y="144" text-anchor="end">lid 96</text>
+        <text x="186" y="244">hugepages 32</text>
+        <text x="186" y="184">memory 80</text>
+        <text class="r" x="186" y="134">16 over</text>
+      </svg>
+      <figcaption><span>32 of hugepages, then 80 of memory</span><span class="chip bad">OOMKilled</span></figcaption>
+    </figure>
+    <figure class="panel case">
+      <svg viewBox="0 0 280 280" role="img" aria-label="Jar with lid at 96. 64 of hugepages, then 80 of ordinary memory reaches 144, 48 over the lid.">
+        <rect class="f-huge" x="74" y="241" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="74" y="221" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="74" y="201" width="92" height="18" rx="2"/>
+        <rect class="f-huge" x="74" y="181" width="92" height="18" rx="2"/>
+        <rect class="f-mem" x="72" y="140" width="96" height="40"/>
+        <rect class="f-over" x="72" y="80" width="96" height="60"/>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="lidline" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="b" x="52" y="144" text-anchor="end">lid 96</text>
+        <text x="186" y="224">hugepages 64</text>
+        <text x="186" y="164">memory 80</text>
+        <text class="r" x="186" y="114">48 over</text>
+      </svg>
+      <figcaption><span>64 of hugepages, then 80 of memory</span><span class="chip bad">OOMKilled</span></figcaption>
+    </figure>
+    <figure class="panel case">
+      <svg viewBox="0 0 280 280" role="img" aria-label="Jar with lid at 96. 80 of ordinary memory first, then hugepages. The first 16 of hugepages fits, the next block does not.">
+        <rect class="f-mem" x="72" y="160" width="96" height="100"/>
+        <rect class="f-huge" x="74" y="141" width="92" height="18" rx="2"/>
+        <rect class="f-over" x="74" y="121" width="92" height="18" rx="2"/>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="lidline" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="b" x="52" y="144" text-anchor="end">lid 96</text>
+        <text x="186" y="214">memory 80</text>
+        <text x="186" y="155">hugepages 16</text>
+        <text class="r" x="186" y="134">stuck here</text>
+      </svg>
+      <figcaption><span>80 of memory, then 32 of hugepages</span><span class="chip bad">Hangs at 100% CPU</span></figcaption>
+    </figure>
+  </div>
+  <p>The order decides the failure. An ordinary page that does not fit calls the OOM killer. A hugepage that does not fit does not, and on this kernel the program retries forever.</p>
+</section>
+
+<section>
+  <h3 id="why-the-third-pod-hangs-instead-of-dying">Why the third pod hangs instead of dying</h3>
+  <p>This part is a kernel bug, separate from the kubelet. It is present from kernel 6.14 (<a href="https://git.kernel.org/torvalds/c/991135774c0e">commit 991135774c0e</a>) through 7.3.</p>
+  <figure class="panel">
+    <svg viewBox="0 0 430 300" style="max-width: 520px; margin: 0 auto" role="img" aria-label="Loop: the program touches a hugepage, the charge is refused because the jar is full, the kernel reports out of memory without killing anything, and the program tries again. A fixed kernel sends the program an error instead.">
+      <defs>
+        <marker id="arr-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path class="head" d="M0 0L10 5L0 10z"/>
+        </marker>
+      </defs>
+      <rect class="node" x="115" y="16" width="200" height="44" rx="8"/>
+      <text x="215" y="43" text-anchor="middle">Program touches a hugepage</text>
+
+      <rect class="node" x="240" y="140" width="175" height="52" rx="8"/>
+      <text x="327" y="162" text-anchor="middle">Jar is full,</text>
+      <text x="327" y="180" text-anchor="middle">the charge is refused</text>
+
+      <rect class="node" x="10" y="140" width="190" height="52" rx="8"/>
+      <text x="105" y="162" text-anchor="middle">Kernel says out of memory,</text>
+      <text x="105" y="180" text-anchor="middle">kills nobody</text>
+
+      <rect class="node fixed" x="232" y="236" width="190" height="52" rx="8"/>
+      <text x="327" y="258" text-anchor="middle">Program gets an error</text>
+      <text x="327" y="276" text-anchor="middle">(SIGBUS) and can stop</text>
+
+      <line class="arrow" x1="285" y1="60" x2="326" y2="137" marker-end="url(#arr-loop)"/>
+      <line class="arrow" x1="240" y1="166" x2="203" y2="166" marker-end="url(#arr-loop)"/>
+      <line class="arrow" x1="105" y1="140" x2="158" y2="63" marker-end="url(#arr-loop)"/>
+      <line class="arrow" x1="327" y1="192" x2="327" y2="233" marker-end="url(#arr-loop)"/>
+
+      <text x="118" y="98" text-anchor="end">try again</text>
+      <text class="r" x="215" y="104" text-anchor="middle">forever,</text>
+      <text class="r" x="215" y="121" text-anchor="middle">100% CPU</text>
+      <text class="m" x="319" y="218" text-anchor="end">kernel 7.4 and later</text>
+    </svg>
+    <figcaption>Measured: the pod stayed <code>Running</code>, spinning, with no SIGBUS and no OOM kill. Upstream commit <a href="https://git.kernel.org/torvalds/c/956aeff185e7"><code>956aeff185e7</code></a> replaces the loop with an error; it is first in 7.4-rc1.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h3 id="the-node-s-numbers-are-fine-the-pod-s-are-not">The node's numbers are fine. The pod's are not.</h3>
+  <p>A touched hugepage is counted in every box around the process, from the inside out. Only the two inner boxes have a lid that is too small.</p>
+  <div class="nest">
+    <div class="nest-head">
+      <span class="nest-name">Node</span>
+      <span class="nest-val"><a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/nodestatus/setters.go#L329-L341">Allocatable memory</a> already leaves out the hugepage pool.</span>
+      <span class="chip ok">right</span>
+    </div>
+    <div class="nest">
+      <div class="nest-head">
+        <span class="nest-name">All pods together</span>
+        <span class="nest-val"><code>kubepods</code> <a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/cm/node_container_manager_linux.go#L265-L281">lid</a> is the whole node here, pool included.</span>
+        <span class="chip ok">right</span>
+      </div>
+      <div class="nest wrong">
+        <div class="nest-head">
+          <span class="nest-name">Pod</span>
+          <span class="nest-val"><a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/cm/helpers_linux.go#L246-L307"><code>memory.max</code></a> = 96, should hold 96 + 64.</span>
+          <span class="chip bad">64 too small</span>
+        </div>
+        <div class="nest wrong">
+          <div class="nest-head">
+            <span class="nest-name">Container</span>
+            <span class="nest-val"><a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/kuberuntime/kuberuntime_container_linux.go#L332-L350"><code>memory.max</code></a> = 96, should hold 96 + 64.</span>
+            <span class="chip bad">64 too small</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <figure class="panel">
+    <div class="bar" role="img" aria-label="Node memory of 11,925: 11,313 allocatable, 512 hugepage pool, 100 eviction reserve.">
+      <div class="alloc"></div><div class="pool"></div><div class="evict"></div>
+    </div>
+    <div class="keys">
+      <span><i style="background: color-mix(in srgb, var(--mem) 35%, var(--surface)); border: 1px solid var(--line)"></i>allocatable 11,313</span>
+      <span><i style="background: var(--huge)"></i>hugepage pool 512</span>
+      <span><i style="background: var(--muted)"></i>eviction reserve 100</span>
+    </div>
+    <figcaption>The test node, 11,925 in total. The kubelet already takes the pool out before it tells the scheduler how much ordinary memory there is.</figcaption>
+  </figure>
+  <p>So taking hugepages out of allocatable a second time would not move either small lid. The pods above would still die.</p>
+</section>
+
+<section>
+  <h2 id="why-not-just-raise-the-limit">Why not just raise the limit</h2>
+</section>
+
+<section>
+  <h3 id="first-idea-raise-the-lid-by-the-hugepage-amount">First idea: raise the lid by the hugepage amount</h3>
+  <p>The kubelet could set the memory lid to memory plus hugepages when it sees the mount option. <code>kubectl</code> would still show 96, because that is what the user asked for. A prototype does this: the three pods above run, and a pod under MemoryQoS is no longer throttled.</p>
+  <ul>
+    <li><strong>Raised the same way:</strong> <code>memory.high</code>, <code>memory.min</code> and <code>memory.low</code>, which the kubelet <a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/kuberuntime/kuberuntime_container_linux.go#L192-L250">writes when MemoryQoS is configured</a>.</li>
+    <li><strong>Unchanged:</strong> the hugepage jar keeps its lid of 64. With the mount option off, the same kubelet writes the old values.</li>
+    <li><strong>In-place resize:</strong> the lid follows the new memory limit plus 64.</li>
+    <li><strong>Size:</strong> about 165 lines of kubelet code in 11 files, plus tests. No API or CRI change.</li>
+  </ul>
+  <p>It has two costs. The first can be repaired. The second cannot, and it is why this is not the plan.</p>
+</section>
+
+<section>
+  <h3 id="cost-one-the-usage-meter-reads-higher-repairable">Cost one: the usage meter reads higher (repairable)</h3>
+  <p>With the option on, the kubelet's usage number for a pod (working set) includes its hugepages. <a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/eviction/helpers.go#L694-L711">Eviction ranking</a>, <code>kubectl top</code> and VPA all read that number. From kernel 6.13 the kernel reports the hugepage part on its own line (<a href="https://github.com/torvalds/linux/blob/v7.0/Documentation/admin-guide/cgroup-v2.rst?plain=1#L1778-L1781"><code>hugetlb</code> in <code>memory.stat</code></a>), so the meter can subtract it. Kernels 6.7 to 6.12 count the hugepages without reporting them separately, so this repair does not work there.</p>
+  <figure class="panel">
+    <div class="meter">
+      <div class="meter-row">
+        <span class="meter-label">Option off</span>
+        <div class="track" role="img" aria-label="10 of 96"><div class="seg-mem"></div></div>
+      </div>
+      <div class="meter-row">
+        <span class="meter-label">Option on, today</span>
+        <div class="track" role="img" aria-label="74 of 96"><div class="seg-mem"></div><div class="seg-huge"></div></div>
+      </div>
+      <div class="meter-row">
+        <span class="meter-label">Option on, cAdvisor patched</span>
+        <div class="track" role="img" aria-label="10 of 96"><div class="seg-mem"></div></div>
+      </div>
+      <div class="meter-note">right edge = the pod's memory request, 96</div>
+    </div>
+    <figcaption>Same pod each time: 10 of ordinary memory and 64 of hugepages. The meter reads 10, then 74, then 10 again with the patch. Measured for the container, the pod and all pods together. The node's number never included hugepages.</figcaption>
+  </figure>
+  <ul>
+    <li><strong>One place by default.</strong> The number <a href="https://github.com/google/cadvisor/blob/lib/v0.61.0/lib/container/libcontainer/handler.go#L890-L899">comes from cAdvisor</a> for containerd and CRI-O alike, so one cAdvisor change covers the default setup.</li>
+    <li><strong>Total usage stays as the kernel reports it</strong> (74 here), so it still matches the raised lid.</li>
+    <li><strong>The <code>available</code> number still counts hugepages.</strong> The kubelet <a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/stats/helper.go#L74-L78">computes it</a> as lid minus working set and <a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/eviction/helpers.go#L857-L870">uses it to evict pods</a> before all pods together reach their lid. With the meter fix alone, a growing pod was OOM-killed and no eviction happened. With <code>available</code> = lid − working set − hugepages, it was evicted at the same point as today.</li>
+    <li><strong>Why it matters:</strong> without it, a pod that fills its 64 of hugepages and uses more than 32 of ordinary memory reads above its 96 request, and eviction can treat it as over its request.</li>
+  </ul>
+  <p class="small">Tested with a patched copy of cAdvisor inside the kubelet. This repair is only needed if the lid is raised: with the option off, or with the kernel switch below, the counter already reads 10.</p>
+</section>
+
+<section>
+  <h3 id="cost-two-the-memory-limit-stops-being-a-limit">Cost two: the memory limit stops being a limit</h3>
+  <p>The kernel keeps one count per jar and cannot tell the two kinds apart. With the lid at 160, a pod that leaves its hugepages untouched can use that room for ordinary memory, and nothing stops it at 96.</p>
+  <div class="cases">
+    <figure class="panel case">
+      <svg viewBox="0 0 280 280" role="img" aria-label="Before the option: lid at 96, a pod that tries to use 150 of memory is stopped at 96.">
+        <rect class="f-mem" x="72" y="140" width="96" height="120"/>
+        <rect class="f-over" x="72" y="72.5" width="96" height="67.5"/>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="lidline" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="b" x="52" y="144" text-anchor="end">lid 96</text>
+        <text x="186" y="204">memory 96</text>
+        <text class="r" x="186" y="110">54 refused</text>
+      </svg>
+      <figcaption><span>What users have today: a pod that asks for 150 of memory</span><span class="chip ok">OOM-killed at 96</span></figcaption>
+    </figure>
+    <figure class="panel case">
+      <svg viewBox="0 0 280 280" role="img" aria-label="Lid raised to 160, no hugepages used, 150 of ordinary memory fits, 54 more than the 96 asked for.">
+        <rect class="f-mem" x="72" y="140" width="96" height="120"/>
+        <rect class="f-extra" x="72" y="72.5" width="96" height="67.5"/>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="spec" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="m" x="52" y="144" text-anchor="end">asked 96</text>
+        <line class="lidline" x1="60" x2="180" y1="60" y2="60"/>
+        <text class="b" x="52" y="64" text-anchor="end">lid 160</text>
+        <text x="186" y="204">memory 150</text>
+        <text class="r" x="186" y="110">54 extra</text>
+      </svg>
+      <figcaption><span>Lid raised: the same pod</span><span class="chip bad">Not stopped</span></figcaption>
+    </figure>
+    <figure class="panel case">
+      <svg viewBox="0 0 280 280" role="img" aria-label="Lid raised to 160, 150 of ordinary memory, then a hugepage that no longer fits under the lid.">
+        <rect class="f-mem" x="72" y="140" width="96" height="120"/>
+        <rect class="f-extra" x="72" y="72.5" width="96" height="67.5"/>
+        <rect class="f-over" x="74" y="51.5" width="92" height="18" rx="2"/>
+        <path class="jar" d="M70 40V260H170V40"/>
+        <line class="spec" x1="60" x2="180" y1="140" y2="140"/>
+        <text class="m" x="52" y="144" text-anchor="end">asked 96</text>
+        <line class="lidline" x1="60" x2="180" y1="60" y2="60"/>
+        <text class="b" x="52" y="64" text-anchor="end">lid 160</text>
+        <text x="186" y="204">memory 150</text>
+        <text class="r" x="186" y="64">stuck here</text>
+      </svg>
+      <figcaption><span>Lid raised: the same pod then touches its hugepages</span><span class="chip bad">Hangs</span></figcaption>
+    </figure>
+  </div>
+  <ul>
+    <li><strong>The pod breaks later instead of now.</strong> Its own hugepages no longer fit, although the node still holds them for it. On kernel 7.0 it hung; <a href="https://github.com/torvalds/linux/blob/v7.0/Documentation/admin-guide/cgroup-v2.rst?plain=1#L238-L241">the kernel documentation</a> says SIGBUS.</li>
+    <li><strong>The node can run short.</strong> The scheduler placed the pod for 96 of ordinary memory. Each such pod can take up to 64 more, while its hugepages stay set aside. This follows from the arithmetic and was not measured.</li>
+    <li><strong>It is a change users can see.</strong> A release that behaves differently from the last one for the same pod is what upstream rejects.</li>
+  </ul>
+</section>
+
+<section>
+  <h2 id="getting-the-old-behaviour-back">Getting the old behaviour back</h2>
+</section>
+
+<section>
+  <h3 id="short-term-works-today-remount-cgroup-v2-at-boot">Short term, works today: remount cgroup v2 at boot</h3>
+  <p>Nothing in Kubernetes can restore the old behaviour on kernels that are already shipped. The node can. With the systemd that is installed today, a small boot unit mounts cgroup v2 again without the option, before the container runtime starts.</p>
+  <figure class="panel">
+    <div class="scroll">
+      <svg viewBox="0 0 710 150" role="img" aria-label="Boot order: systemd in the initrd mounts cgroup v2 with the option on, a boot unit remounts it without the option, then the container runtime and kubelet start and pods get two separate jars. The option is on for a short window between the first two steps and off afterwards.">
+        <defs>
+          <marker id="arr-remount" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path class="head" d="M0 0L10 5L0 10z"/>
+          </marker>
+        </defs>
+        <rect class="node" x="10" y="16" width="150" height="56" rx="8"/>
+        <text x="85" y="40" text-anchor="middle">systemd (in the initrd)</text>
+        <text x="85" y="58" text-anchor="middle">mounts: option on</text>
+        <rect class="node fixed" x="190" y="16" width="150" height="56" rx="8"/>
+        <text class="b" x="265" y="40" text-anchor="middle">Boot unit remounts</text>
+        <text class="b" x="265" y="58" text-anchor="middle">without the option</text>
+        <rect class="node" x="370" y="16" width="150" height="56" rx="8"/>
+        <text x="445" y="40" text-anchor="middle">Container runtime</text>
+        <text x="445" y="58" text-anchor="middle">and kubelet start</text>
+        <rect class="node" x="550" y="16" width="150" height="56" rx="8"/>
+        <text x="625" y="40" text-anchor="middle">Pods get two</text>
+        <text x="625" y="58" text-anchor="middle">separate jars again</text>
+        <line class="arrow" x1="160" y1="44" x2="187" y2="44" marker-end="url(#arr-remount)"/>
+        <line class="arrow" x1="340" y1="44" x2="367" y2="44" marker-end="url(#arr-remount)"/>
+        <line class="arrow" x1="520" y1="44" x2="547" y2="44" marker-end="url(#arr-remount)"/>
+        <line class="spec" x1="85" y1="72" x2="85" y2="100"/>
+        <line class="spec" x1="265" y1="72" x2="265" y2="100"/>
+        <rect class="st-on" x="85" y="100" width="180" height="24" rx="4"/>
+        <rect class="st-off" x="265" y="100" width="435" height="24" rx="4"/>
+        <text class="r" x="175" y="117" text-anchor="middle">option on</text>
+        <text class="g" x="482" y="117" text-anchor="middle">option off</text>
+        <text class="m" x="85" y="142">short window at early boot</text>
+      </svg>
+    </div>
+    <figcaption>The bar shows the state of the option over the boot. The drawing is not to scale; the window lasts until the unit runs.</figcaption>
+  </figure>
+  <pre class="panel">[Unit]
+Description=Mount cgroup v2 without memory_hugetlb_accounting
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=sysinit.target containerd.service crio.service kubelet.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/mount -o remount,nsdelegate,memory_recursiveprot cgroup2 /sys/fs/cgroup
+
+[Install]
+WantedBy=sysinit.target</pre>
+  <ul>
+    <li><strong>Tested with nothing modified:</strong> Ubuntu kernel 7.0.0-43, systemd 259.5, containerd 2.2.2 and a kubelet built from the unmodified source. The option was off after the reboot, and all five hugepage test pods behaved as before the option existed.</li>
+    <li><strong>Control:</strong> with the unit disabled, the same node booted with the option on, killed two of the pods and hung a third.</li>
+    <li><strong>It stays off.</strong> <code>systemctl daemon-reexec</code>, service restarts and services with cgroup protections did not bring the option back.</li>
+  </ul>
+  <h4>Weak points</h4>
+  <ul>
+    <li><strong>It must repeat every other option.</strong> A remount <a href="https://github.com/torvalds/linux/blob/v7.0/kernel/cgroup/cgroup.c#L2045-L2070">replaces the whole list</a>, so the unit names <code>nsdelegate</code> and <code>memory_recursiveprot</code> itself. If a later systemd adds an option, the unit silently drops it.</li>
+    <li><strong>Ordering.</strong> It only works if it runs before the container runtime, and nothing enforces that on a differently arranged system.</li>
+    <li><strong>Stock systemd can turn it back on.</strong> <code>systemd-nspawn</code> started without its own cgroup namespace <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L67-L88">mounts cgroup v2 with the option</a>, and the kernel applies that to the whole machine. Measured on stock systemd: after such a container ran, the option was on again. A systemd with the switch change below no longer does this.</li>
+    <li><strong>It is a workaround.</strong> It undoes a default instead of choosing a setting.</li>
+  </ul>
+</section>
+
+<section>
+  <h3 id="short-term-cleaner-a-switch-in-systemd">Short term, cleaner: a switch in systemd</h3>
+  <p>systemd <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L45-L65">turns the option on whenever the kernel supports it</a> and offers no way to say no. A small patch adds one: with <code>systemd.memory_hugetlb_accounting=no</code> on the kernel command line, systemd never sets the option, so nothing has to undo it.</p>
+  <figure class="panel">
+    <div class="scroll">
+      <svg viewBox="0 0 710 150" role="img" aria-label="Boot order with the systemd switch: the kernel command line carries the switch, systemd mounts cgroup v2 without the option, then the container runtime and kubelet start and pods get two separate jars. The option is off from the first mount.">
+        <defs>
+          <marker id="arr-switch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path class="head" d="M0 0L10 5L0 10z"/>
+          </marker>
+        </defs>
+        <rect class="node" x="10" y="16" width="150" height="56" rx="8"/>
+        <text x="85" y="40" text-anchor="middle">Kernel command line</text>
+        <text x="85" y="58" text-anchor="middle">carries the switch</text>
+        <rect class="node fixed" x="190" y="16" width="150" height="56" rx="8"/>
+        <text class="b" x="265" y="40" text-anchor="middle">systemd mounts</text>
+        <text class="b" x="265" y="58" text-anchor="middle">without the option</text>
+        <rect class="node" x="370" y="16" width="150" height="56" rx="8"/>
+        <text x="445" y="40" text-anchor="middle">Container runtime</text>
+        <text x="445" y="58" text-anchor="middle">and kubelet start</text>
+        <rect class="node" x="550" y="16" width="150" height="56" rx="8"/>
+        <text x="625" y="40" text-anchor="middle">Pods get two</text>
+        <text x="625" y="58" text-anchor="middle">separate jars again</text>
+        <line class="arrow" x1="160" y1="44" x2="187" y2="44" marker-end="url(#arr-switch)"/>
+        <line class="arrow" x1="340" y1="44" x2="367" y2="44" marker-end="url(#arr-switch)"/>
+        <line class="arrow" x1="520" y1="44" x2="547" y2="44" marker-end="url(#arr-switch)"/>
+        <line class="spec" x1="265" y1="72" x2="265" y2="100"/>
+        <rect class="st-off" x="265" y="100" width="435" height="24" rx="4"/>
+        <text class="g" x="482" y="117" text-anchor="middle">option off from the first mount</text>
+        <text class="m" x="85" y="117">not mounted yet</text>
+      </svg>
+    </div>
+    <figcaption>There is no window and no second mount. The switch is read from the kernel command line because that is the one place both the initrd's systemd and the main one can see.</figcaption>
+  </figure>
+  <p>With the switch set to <code>no</code>, an unmodified kubelet ran all five hugepage test pods as before the option existed, and the pod holding 64 of hugepages read a usage of 10. Tested on Ubuntu 26.04 (kernel 7.0.0-43, containerd 2.2.2) with the change applied to Ubuntu's systemd 259.9.</p>
+
+  <h4>The change</h4>
+  <ul>
+    <li><strong>Written against upstream systemd</strong> (the development branch for v263; <a href="https://github.com/harche/systemd/tree/cgroup-hugetlb-accounting-switch">work-in-progress branch</a>): about 60 lines in <code>src/shared/mount-setup.c</code>, a man page entry in <code>kernel-command-line(7)</code>, a <code>NEWS</code> entry, and one assertion added to the existing integration test <code>TEST-08-INITRD</code>.</li>
+    <li><strong>The default is unchanged.</strong> Without the switch systemd mounts cgroup v2 exactly as it does today.</li>
+    <li><strong>One name for the whole boot.</strong> The initrd's systemd and the main one read the same switch, because cgroup v2 is mounted once, by whichever runs first.</li>
+    <li><strong>An older initrd does not defeat it.</strong> If cgroup v2 was already mounted with the option by a systemd that does not know the switch, the main systemd remounts it without the option. Measured with a deliberately old initrd: the option was off after boot.</li>
+  </ul>
+
+  <h4>Tests</h4>
+  <ul>
+    <li><strong>Values of the switch:</strong> <code>no</code> and <code>0</code> turn the option off. No switch, <code>yes</code>, a switch without a value, an invalid value and the <code>rd.</code> form all leave it on. One boot each, on Ubuntu 26.04 with upstream systemd plus the change.</li>
+    <li><strong>systemd's own checks</strong> pass on Ubuntu 26.04 arm64 and Fedora 44 x86_64: the build with warnings as errors, clang-tidy on the changed file, and <code>TEST-08-INITRD</code> with its new assertion. The same test fails when the source change is taken out. <code>TEST-01-BASIC</code> and <code>TEST-19-CGROUP</code> pass on x86_64 and were not run on arm64.</li>
+    <li><strong><code>systemd-nspawn</code> keeps whatever state the machine has.</strong> It is the only other place systemd mounts cgroup v2. With the change it copies the option's state from the hierarchy that is already mounted. Measured: with the switch set, the option stayed off after containers ran, with and without their own cgroup namespace, and also when the container tool could not see the kernel command line.</li>
+  </ul>
+  <h4>Weak points</h4>
+  <ul>
+    <li><strong>It needs systemd to accept it</strong> and distributions to ship that version. It has not been proposed yet.</li>
+    <li><strong>The node still has to be configured.</strong> Someone has to put the switch on the kernel command line of every node that runs hugepage pods.</li>
+    <li><strong>It is node-wide.</strong> System services on that node go back to the old accounting too.</li>
+  </ul>
+</section>
+
+<section>
+  <h3 id="long-term-a-kernel-switch-for-the-pods-cgroup">Long term: a kernel switch for the pods' cgroup</h3>
+  <p>The mount option is one switch for the whole machine. A per-cgroup file, <code>memory.hugetlb_accounting</code>, lets one part of the cgroup tree keep the old rule, and the kubelet sets it on the cgroups it owns.</p>
+
+  <h4>Why the kernel should take it</h4>
+  <ul>
+    <li><strong>Reviewers expected this breakage; that is why the option is <a href="https://github.com/torvalds/linux/blob/v7.0/Documentation/admin-guide/cgroup-v2.rst?plain=1#L220-L225">opt-in</a>.</strong>
+      <ul class="quotes">
+        <li>Frank van der Linden (<a href="https://lore.kernel.org/all/CAPTztWY8eDSa1qKx35hTm5ef+e13SDnRHDrevc-1V1v7-pEP3w@mail.gmail.com/">26 Sep 2023</a>): workloads "will break badly because they'll hit their limits immediately - imagine a container that uses 1G hugetlb pages to back something large (a database, a VM), and 'plain' memory for control processes."</li>
+        <li>Michal Hocko (<a href="https://lore.kernel.org/all/ZRQQMABiVIcXXcrg@dhcp22.suse.cz/">27 Sep 2023</a>): "I will also Nack involving hugetlb pages being accounted by default. This would break any setups which mix normal and hugetlb memory with memcg limits applied."</li>
+        <li>Johannes Weiner (<a href="https://lore.kernel.org/all/20230927184738.GC365513@cmpxchg.org/">27 Sep 2023</a>): "I think we're all on the same page this needs to be opt-in."</li>
+      </ul></li>
+    <li><strong>A per-cgroup control was raised and deferred, not rejected.</strong>
+      <ul class="quotes">
+        <li>Michal Hocko (<a href="https://lore.kernel.org/all/ZRrI90KcRBwVZn%2Fr@dhcp22.suse.cz/">2 Oct 2023</a>): "I am especially worried about setups where a mixed bag of workloads (containers) is executed. While some of them will be ready for the new accounting mode many will leave in their own world without ever being modified. How do we deal with that situation?"</li>
+        <li>Johannes Weiner (<a href="https://lore.kernel.org/all/20231002162133.GC5054@cmpxchg.org/">2 Oct 2023</a>): "It's possible to add more localized control on top of the global flag should this come up. [...] Let's cross this bridge not when but if we have to."</li>
+        <li>Nhat Pham, the author (<a href="https://lore.kernel.org/all/CAKEwX=OwrMNMAvve9a965mBJm8as+njtXE993VcnKXdccd5GEw@mail.gmail.com/">2 Oct 2023</a>): "we can always revisit it if/when it proves to be an issue and add appropriate memcg-specific control for this feature as a follow-up."</li>
+      </ul></li>
+    <li><strong>It has now come up.</strong> systemd 259 turns the option on for every machine (<a href="https://github.com/systemd/systemd/pull/39486">systemd pull request 39486</a>), and Kubernetes is the mixed case: pods with their own memory limit next to a hugepage limit. The tests on this page are the evidence.</li>
+    <li><strong>The authors' own use is untouched.</strong> Their case is one total budget per container with hugepages allocated on demand. The switch defaults to 1, so nothing changes unless a cgroup owner sets it.</li>
+  </ul>
+  <p class="small">Review threads: <a href="https://lore.kernel.org/all/20230926194949.2637078-1-nphamcs@gmail.com/T/">v1</a>, <a href="https://lore.kernel.org/all/20230928005723.1709119-1-nphamcs@gmail.com/T/">v2</a>, <a href="https://lore.kernel.org/all/20231003001828.2554080-1-nphamcs@gmail.com/T/">v3</a>, <a href="https://lore.kernel.org/all/20231006184629.155543-1-nphamcs@gmail.com/T/">v4</a>. Merged as kernel commit <a href="https://git.kernel.org/torvalds/c/8cba9576df60">8cba9576df60</a>.</p>
+
+  <h4>The design</h4>
+  <ul>
+    <li><strong>Kernel:</strong> every non-root cgroup gets <code>memory.hugetlb_accounting</code>, default 1 (<a href="https://github.com/harche/linux/tree/hugetlb-accounting-opt-out">work-in-progress branch</a>). With 0, hugepages used in that cgroup or below are counted in its parent instead. If that parent is the root, no limit applies, and the root's <code>memory.stat</code> still shows them. Because the count moves up and does not disappear, a cgroup cannot use the switch to get around a limit above it. Like <code>memory.max</code>, the file is set by the parent and cannot be delegated.</li>
+    <li><strong>Kubelet:</strong> when the file exists, it writes 0 on <code>kubepods</code> and on each reserved cgroup it enforces. Nothing else in the kubelet changes.</li>
+  </ul>
+  <div class="nest">
+    <div class="nest-head">
+      <span class="nest-name">Root</span>
+      <span class="nest-val">Hugepages used below a switched-off cgroup are counted in its parent. Here that is the root, which has no lid.</span>
+      <span class="chip note">counted here</span>
+    </div>
+    <div class="nest">
+      <div class="nest-head">
+        <span class="nest-name">All pods together</span>
+        <span class="nest-val"><code>kubepods</code>: the kubelet writes 0.</span>
+        <span class="chip ok">switch = 0</span>
+      </div>
+      <div class="nest">
+        <div class="nest-head">
+          <span class="nest-name">Pod and container</span>
+          <span class="nest-val"><code>memory.max</code> = 96, ordinary memory only, as before the option existed.</span>
+          <span class="chip ok">hugepages not counted</span>
+        </div>
+      </div>
+    </div>
+    <div class="nest">
+      <div class="nest-head">
+        <span class="nest-name">Reserved cgroups</span>
+        <span class="nest-val">System-reserved and kube-reserved, when the kubelet enforces them (<a href="https://kep.k8s.io/6252">KEP-6252</a>): the kubelet writes 0.</span>
+        <span class="chip ok">switch = 0</span>
+      </div>
+    </div>
+    <div class="nest">
+      <div class="nest-head">
+        <span class="nest-name">Everything else</span>
+        <span class="nest-val">Other system services keep what systemd set up.</span>
+        <span class="chip note">switch = 1</span>
+      </div>
+    </div>
+  </div>
+  <p>Tested on mainline 7.4-rc3 with the series and the kubelet change, with the mount option still on: the hugepage pods, the usage numbers, the reserved cgroup, in-place resize, pod-level resources, the DRA claim, the shared hugepage volume and MemoryQoS throttling all behaved as they do with the option off (arm64, containerd).</p>
+</section>
+
+<section>
+  <h2 id="other-features-on-the-same-node">Other features on the same node</h2>
+  <p>Anything that puts a memory lid next to a hugepage lid, or reads the memory counter, is affected the same way as a pod. Fourteen features were tested with an unmodified kubelet on the unmodified kernel (7.0.0-43).</p>
+
+  <h4>Hugepages reserved for host services (<a href="https://kep.k8s.io/6252">KEP-6252</a>)</h4>
+  <p>With <code>--system-reserved=memory=96Mi,hugepages-2Mi=64Mi</code> enforced, the kubelet <a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/cm/node_container_manager_linux.go#L220-L251">gives the host services' cgroup the same two lids</a> a pod gets. A host service that uses 64 of hugepages and 80 of memory then fails like the pods do.</p>
+  <ul>
+    <li><strong>Only with enforcement.</strong> It needs <code>system-reserved</code> or <code>kube-reserved</code> in <code>enforceNodeAllocatable</code>, which is not the default.</li>
+    <li><strong>The KEP text is out of date.</strong> <a href="https://github.com/kubernetes/enhancements/blob/cac930cb9d7c70192016865425f943c339414011/keps/sig-node/6252-system-reserved-hugepages/README.md?plain=1#L305-L310">It says</a> Kubernetes does not enable <code>memory_hugetlb_accounting</code>. systemd now enables it for every node.</li>
+  </ul>
+
+  <h4>In-place resize (<a href="https://kep.k8s.io/1287">KEP-1287</a>)</h4>
+  <p>Before lowering a memory limit, the kubelet <a href="https://github.com/kubernetes/kubernetes/blob/5e2cad18bceac0c1a8031ed5e11c2bb3ee3c4959/pkg/kubelet/kuberuntime/kuberuntime_manager.go#L1303-L1327">checks that the pod's usage is below the new limit</a>. That usage now includes hugepages, so a decrease that is fine for ordinary memory is refused.</p>
+  <figure class="panel">
+    <div class="meter">
+      <div class="meter-row">
+        <span class="meter-label">Option off</span>
+        <div class="track-wrap"><div class="track plain" role="img" aria-label="usage 20, new limit 80"><div class="seg-mem" style="width: 15.6%"></div></div><i class="mark" style="left: 62.5%"></i></div>
+      </div>
+      <div class="meter-row">
+        <span class="meter-label">Option on</span>
+        <div class="track-wrap"><div class="track plain" role="img" aria-label="usage 84, new limit 80"><div class="seg-mem" style="width: 15.6%"></div><div class="seg-huge" style="width: 50%"></div></div><i class="mark" style="left: 62.5%"></i></div>
+      </div>
+      <div class="meter-note">vertical line = the new limit, 80</div>
+    </div>
+    <figcaption>A pod using 20 of memory and 64 of hugepages asks to go from a 256 limit to 80. With the option off the usage is 20 and the resize is applied. With it on the usage is 84 and the kubelet answers "cannot decrease memory limits ... below current usage".</figcaption>
+  </figure>
+
+  <h4>All features tested</h4>
+  <p>Each row is the same pod or service run twice with an unmodified kubelet, once with the option on and once with it off. Unless a row says otherwise, the test program touches 64 of hugepages, then 80 of ordinary memory, under a memory limit of 96 and a hugepage limit of 64, and then exits.</p>
+  <div class="panel tablewrap">
+    <table>
+      <thead><tr><th>Feature</th><th>Option on</th><th>Option off</th></tr></thead>
+      <tbody>
+        <tr><td>Reserved hugepages for host services (<a href="https://kep.k8s.io/6252">KEP-6252</a>)</td><td>Host service in the reserved cgroup is killed by the kernel partway (OOM)</td><td>Runs every step and exits normally</td></tr>
+        <tr><td>In-place resize (<a href="https://kep.k8s.io/1287">KEP-1287</a>)</td><td>Request to lower the limit from 256 to 80 is refused; the limit stays 256</td><td>Limit is lowered to 80</td></tr>
+        <tr><td>Pod-level resources (<a href="https://kep.k8s.io/2837">KEP-2837</a>)</td><td>Pod is killed by the kernel partway (OOM)</td><td>Runs every step and exits normally</td></tr>
+        <tr><td>DRA node allocatable resources (<a href="https://kep.k8s.io/5517">KEP-5517</a>)</td><td>Pod is killed by the kernel partway (OOM). The kubelet set the limits of 96 and 64 from the pod spec plus the claim</td><td>Runs every step and exits normally</td></tr>
+        <tr><td>MemoryQoS throttling (<a href="https://kep.k8s.io/2570">KEP-2570</a>)</td><td>A pod using 180 of memory and 64 of hugepages under a 256 limit is slowed down by the kernel 404 times</td><td>Never slowed down</td></tr>
+        <tr><td>Pressure stall information (<a href="https://kep.k8s.io/4205">KEP-4205</a>)</td><td>The same pod reports memory stalls, also in the summary API</td><td>No stalls</td></tr>
+        <tr><td>Swap, LimitedSwap (<a href="https://kep.k8s.io/2400">KEP-2400</a>)</td><td>Pod using 200 of memory and 128 of hugepages under a 256 limit keeps running, with 74 of its memory pushed to swap</td><td>Keeps running, nothing in swap</td></tr>
+        <tr><td>Stats from the runtime (<a href="https://kep.k8s.io/2371">KEP-2371</a>, gate on)</td><td>Working set reads 74 for pod and container</td><td>Reads 10</td></tr>
+        <tr><td>Eviction and usage numbers (default stats path)</td><td>Working set includes hugepages; the all-pods eviction signal drops as they are used</td><td>Unchanged</td></tr>
+        <tr><td>Hugepage <code>emptyDir</code> shared by two containers (<a href="https://kep.k8s.io/1539">KEP-1539</a>)</td><td>The container that touches the pages first has 64 in its memory counter, the other 0</td><td>0 in both</td></tr>
+        <tr><td>Memory Manager, static policy (<a href="https://kep.k8s.io/1769">KEP-1769</a>)</td><td>Pod is killed by the kernel partway (OOM), as without the manager; its assignment is the same</td><td>Runs every step and exits normally</td></tr>
+        <tr><td><code>QOSReserved</code> (alpha)</td><td>No failure: 448 of hugepages plus 600 of memory fit under the Burstable lid of 1524. That lid includes the hugepage pool, so the only effect is less room for pods to burst</td><td>Same</td></tr>
+        <tr><td>Downward API for hugepages (<a href="https://kep.k8s.io/2053">KEP-2053</a>)</td><td>Reports 96 and 64</td><td>Same</td></tr>
+        <tr><td>Memory-backed volume sizing (<a href="https://kep.k8s.io/1967">KEP-1967</a>)</td><td>Volume is 96</td><td>Same</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</section>
+
+
+
+<section>
+  <h2 id="where-to-read-more">Where to read more</h2>
+  <ul>
+    <li><strong>Kubernetes:</strong> <a href="https://github.com/kubernetes/kubernetes/issues/144131">issue 144131</a>; the docs on <a href="https://kubernetes.io/docs/tasks/manage-hugepages/scheduling-hugepages/">hugepages</a>, <a href="https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/">node allocatable and reserved resources</a>, <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/">node-pressure eviction</a> and <a href="https://kubernetes.io/docs/tasks/configure-pod-container/resize-container-resources/">in-place resize</a>.</li>
+    <li><strong>Kernel:</strong> the <a href="https://git.kernel.org/torvalds/c/8cba9576df60">commit that added the mount option</a>, its <a href="https://github.com/torvalds/linux/blob/v7.0/Documentation/admin-guide/cgroup-v2.rst?plain=1#L220-L246">documentation</a>, the <a href="https://lore.kernel.org/all/20230928005723.1709119-1-nphamcs@gmail.com/T/">review thread</a> where per-cgroup control was deferred, and the <a href="https://git.kernel.org/torvalds/c/956aeff185e7">fix for the hang</a>.</li>
+    <li><strong>systemd:</strong> <a href="https://github.com/systemd/systemd/pull/39486">pull request 39486</a>, which turned the option on, and <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L45-L88">the code that mounts cgroup v2</a>.</li>
+    <li><strong>runc:</strong> <a href="https://github.com/opencontainers/runc/issues/5258">issue 5258</a> and <a href="https://github.com/opencontainers/runc/pull/5267">pull request 5267</a>, about containers resetting the node's cgroup mount options.</li>
+    <li><strong>Work in progress:</strong> the <a href="https://github.com/harche/systemd/tree/cgroup-hugetlb-accounting-switch">systemd switch</a> and the <a href="https://github.com/harche/linux/tree/hugetlb-accounting-opt-out">kernel switch</a>. Neither has been proposed upstream yet.</li>
+  </ul>
+</section>
+
+
+
+
+
+</div>

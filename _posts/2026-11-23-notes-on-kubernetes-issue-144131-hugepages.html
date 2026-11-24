@@ -491,25 +491,25 @@ WantedBy=sysinit.target</pre>
   <ul>
     <li><strong>It must repeat every other option.</strong> A remount <a href="https://github.com/torvalds/linux/blob/v7.0/kernel/cgroup/cgroup.c#L2045-L2070">replaces the whole list</a>, so the unit names <code>nsdelegate</code> and <code>memory_recursiveprot</code> itself. If a later systemd adds an option, the unit silently drops it.</li>
     <li><strong>Ordering.</strong> It only works if it runs before the container runtime, and nothing enforces that on a differently arranged system.</li>
-    <li><strong>Stock systemd can turn it back on.</strong> <code>systemd-nspawn</code> started without its own cgroup namespace <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L67-L88">mounts cgroup v2 with the option</a>, and the kernel applies that to the whole machine. Measured on stock systemd: after such a container ran, the option was on again. A systemd with the switch change below no longer does this.</li>
+    <li><strong>Stock systemd can turn it back on.</strong> <code>systemd-nspawn</code> started without its own cgroup namespace <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L67-L88">mounts cgroup v2 with the option</a>, and the kernel applies that to the whole machine. Measured on stock systemd: after such a container ran, the option was on again. A systemd with the change below no longer does this.</li>
     <li><strong>It is a workaround.</strong> It undoes a default instead of choosing a setting.</li>
   </ul>
 </section>
 
 <section>
   <h3 id="short-term-cleaner-a-switch-in-systemd">Short term, cleaner: a switch in systemd</h3>
-  <p>systemd <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L45-L65">turns the option on whenever the kernel supports it</a> and offers no way to say no. A small patch adds one: with <code>systemd.memory_hugetlb_accounting=no</code> on the kernel command line, systemd never sets the option, so nothing has to undo it.</p>
+  <p>systemd <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L45-L65">turns the option on whenever the kernel supports it</a> and offers no way to say no. The change makes the option opt-in again: systemd does not set it unless <code>systemd.memory_hugetlb_accounting=yes</code> is on the kernel command line, so on a default boot nothing has to undo it.</p>
   <figure class="panel">
     <div class="scroll">
-      <svg viewBox="0 0 710 150" role="img" aria-label="Boot order with the systemd switch: the kernel command line carries the switch, systemd mounts cgroup v2 without the option, then the container runtime and kubelet start and pods get two separate jars. The option is off from the first mount.">
+      <svg viewBox="0 0 710 150" role="img" aria-label="Boot order with the systemd change: on a default boot systemd mounts cgroup v2 without the option, then the container runtime and kubelet start and pods get two separate jars. The option is off from the first mount.">
         <defs>
           <marker id="arr-switch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
             <path class="head" d="M0 0L10 5L0 10z"/>
           </marker>
         </defs>
         <rect class="node" x="10" y="16" width="150" height="56" rx="8"/>
-        <text x="85" y="40" text-anchor="middle">Kernel command line</text>
-        <text x="85" y="58" text-anchor="middle">carries the switch</text>
+        <text x="85" y="40" text-anchor="middle">Default boot,</text>
+        <text x="85" y="58" text-anchor="middle">no switch needed</text>
         <rect class="node fixed" x="190" y="16" width="150" height="56" rx="8"/>
         <text class="b" x="265" y="40" text-anchor="middle">systemd mounts</text>
         <text class="b" x="265" y="58" text-anchor="middle">without the option</text>
@@ -528,28 +528,30 @@ WantedBy=sysinit.target</pre>
         <text class="m" x="85" y="117">not mounted yet</text>
       </svg>
     </div>
-    <figcaption>There is no window and no second mount. The switch is read from the kernel command line because that is the one place both the initrd's systemd and the main one can see.</figcaption>
+    <figcaption>There is no window, no second mount and nothing to configure. The switch that turns the option on is read from the kernel command line because that is the one place both the initrd's systemd and the main one can see.</figcaption>
   </figure>
-  <p>With the switch set to <code>no</code>, an unmodified kubelet ran all five hugepage test pods as before the option existed, and the pod holding 64 of hugepages read a usage of 10. Tested on Ubuntu 26.04 (kernel 7.0.0-43, containerd 2.2.2) with the change applied to Ubuntu's systemd 259.9.</p>
+  <p>With the option off at boot, an unmodified kubelet ran all five hugepage test pods as before the option existed, and the pod holding 64 of hugepages read a usage of 10. That run was on Ubuntu 26.04 (kernel 7.0.0-43, containerd 2.2.2) with an earlier form of the change on Ubuntu's systemd 259.9, where a switch turned the option off. The resulting mount state is the same.</p>
 
   <h4>The change</h4>
   <ul>
-    <li><strong>Written against upstream systemd</strong> (the development branch for v263; <a href="https://github.com/systemd/systemd/pull/45018">pull request 45018</a>): about 60 lines in <code>src/shared/mount-setup.c</code>, a man page entry in <code>kernel-command-line(7)</code>, a <code>NEWS</code> entry, and one assertion added to the existing integration test <code>TEST-08-INITRD</code>.</li>
-    <li><strong>The default is unchanged.</strong> Without the switch systemd mounts cgroup v2 exactly as it does today.</li>
+    <li><strong>Written against upstream systemd</strong> (the development branch for v263; <a href="https://github.com/systemd/systemd/pull/45018">pull request 45018</a>): about 190 lines in <code>src/shared/mount-setup.c</code>, a man page entry in <code>kernel-command-line(7)</code>, a <code>NEWS</code> entry, new checks in the existing integration test <code>TEST-08-INITRD</code> and a new case in <code>TEST-13-NSPAWN</code>.</li>
+    <li><strong>The default goes back to off.</strong> Without the switch systemd mounts cgroup v2 as it did before v259, without the option. <code>systemd.memory_hugetlb_accounting=yes</code> turns it on.</li>
     <li><strong>One name for the whole boot.</strong> The initrd's systemd and the main one read the same switch, because cgroup v2 is mounted once, by whichever runs first.</li>
-    <li><strong>An older initrd does not defeat it.</strong> If cgroup v2 was already mounted with the option by a systemd that does not know the switch, the main systemd remounts it without the option. Measured with a deliberately old initrd: the option was off after boot.</li>
+    <li><strong>An older initrd does not defeat it.</strong> If cgroup v2 was already mounted differently from what is wanted, for example with the option on by a v259 to v262 systemd in the initrd, the main systemd remounts it at boot and keeps the other mount options. Measured with a deliberately old initrd: off after a default boot, on after a boot with <code>=yes</code>.</li>
+    <li><strong>Only at boot.</strong> <code>systemctl daemon-reexec</code> does not remount, so a change made by hand on a running system stays, and a system updated from v259 to v262 changes at its next boot.</li>
+    <li><strong>Containers do not override the host.</strong> A cgroup v2 mount made from the host's cgroup namespace sets the options for the whole machine. <code>systemd-nspawn</code> without a cgroup namespace, and a systemd that boots inside a container sharing the host's cgroup namespace, both keep what the host uses and ignore their own command line.</li>
   </ul>
 
   <h4>Tests</h4>
   <ul>
-    <li><strong>Values of the switch:</strong> <code>no</code> and <code>0</code> turn the option off. No switch, <code>yes</code>, a switch without a value, an invalid value and the <code>rd.</code> form all leave it on. One boot each, on Ubuntu 26.04 with upstream systemd plus the change.</li>
-    <li><strong>systemd's own checks</strong> pass on Ubuntu 26.04 arm64 and Fedora 44 x86_64: the build with warnings as errors, clang-tidy on the changed file, and <code>TEST-08-INITRD</code> with its new assertion. The same test fails when the source change is taken out. <code>TEST-01-BASIC</code> and <code>TEST-19-CGROUP</code> pass on x86_64 and were not run on arm64.</li>
-    <li><strong><code>systemd-nspawn</code> keeps whatever state the machine has.</strong> It is the only other place systemd mounts cgroup v2. With the change it copies the option's state from the hierarchy that is already mounted. Measured: with the switch set, the option stayed off after containers ran, with and without their own cgroup namespace, and also when the container tool could not see the kernel command line.</li>
+    <li><strong>Values of the switch:</strong> <code>yes</code>, <code>1</code> and a switch without a value turn the option on. No switch, <code>no</code>, an invalid value (with a warning in the log) and the <code>rd.</code> form all leave it off. One boot each, on Ubuntu 26.04 arm64 with upstream systemd plus the change.</li>
+    <li><strong>systemd's own checks</strong> pass on Fedora 44 x86_64: the build with warnings as errors, clang-tidy on the changed file, <code>TEST-08-INITRD</code>, <code>TEST-13-NSPAWN</code>, <code>TEST-01-BASIC</code> and <code>TEST-19-CGROUP</code>. Each new check fails when the code it covers is disabled. On Ubuntu 26.04 arm64 the build, clang-tidy, <code>TEST-08-INITRD</code> and the new <code>TEST-13-NSPAWN</code> case passed on the change as it was before the container part was added.</li>
+    <li><strong><code>systemd-nspawn</code> keeps whatever state the machine has.</strong> Measured both ways: on a default boot the option stayed off after containers ran, with and without their own cgroup namespace, also when the container tool saw a command line with <code>=yes</code>. On a boot with <code>=yes</code> it stayed on. A real systemd booted in a container that shares the host's cgroup namespace and has no cgroup mount left the host's setting alone too, with the host's option off and on.</li>
   </ul>
   <h4>Weak points</h4>
   <ul>
-    <li><strong>It needs systemd to accept it</strong> and distributions to ship that version. It is proposed as <a href="https://github.com/systemd/systemd/pull/45018">pull request 45018</a>.</li>
-    <li><strong>The node still has to be configured.</strong> Someone has to put the switch on the kernel command line of every node that runs hugepage pods.</li>
+    <li><strong>It needs systemd to accept it</strong> and distributions to ship that version. It reverses a default systemd chose in v259, which is a bigger ask than an added switch. It is proposed as <a href="https://github.com/systemd/systemd/pull/45018">pull request 45018</a>.</li>
+    <li><strong>Nodes only get it with a systemd update.</strong> Until then the remount unit above is the way.</li>
     <li><strong>It is node-wide.</strong> System services on that node go back to the old accounting too.</li>
   </ul>
 </section>

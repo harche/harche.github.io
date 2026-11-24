@@ -534,7 +534,7 @@ WantedBy=sysinit.target</pre>
 
   <h4>The change</h4>
   <ul>
-    <li><strong>Written against upstream systemd</strong> (the development branch for v263; <a href="https://github.com/harche/systemd/tree/cgroup-hugetlb-accounting-switch">work-in-progress branch</a>): about 60 lines in <code>src/shared/mount-setup.c</code>, a man page entry in <code>kernel-command-line(7)</code>, a <code>NEWS</code> entry, and one assertion added to the existing integration test <code>TEST-08-INITRD</code>.</li>
+    <li><strong>Written against upstream systemd</strong> (the development branch for v263; <a href="https://github.com/systemd/systemd/pull/45018">pull request 45018</a>): about 60 lines in <code>src/shared/mount-setup.c</code>, a man page entry in <code>kernel-command-line(7)</code>, a <code>NEWS</code> entry, and one assertion added to the existing integration test <code>TEST-08-INITRD</code>.</li>
     <li><strong>The default is unchanged.</strong> Without the switch systemd mounts cgroup v2 exactly as it does today.</li>
     <li><strong>One name for the whole boot.</strong> The initrd's systemd and the main one read the same switch, because cgroup v2 is mounted once, by whichever runs first.</li>
     <li><strong>An older initrd does not defeat it.</strong> If cgroup v2 was already mounted with the option by a systemd that does not know the switch, the main systemd remounts it without the option. Measured with a deliberately old initrd: the option was off after boot.</li>
@@ -548,7 +548,7 @@ WantedBy=sysinit.target</pre>
   </ul>
   <h4>Weak points</h4>
   <ul>
-    <li><strong>It needs systemd to accept it</strong> and distributions to ship that version. It has not been proposed yet.</li>
+    <li><strong>It needs systemd to accept it</strong> and distributions to ship that version. It is proposed as <a href="https://github.com/systemd/systemd/pull/45018">pull request 45018</a>.</li>
     <li><strong>The node still has to be configured.</strong> Someone has to put the switch on the kernel command line of every node that runs hugepage pods.</li>
     <li><strong>It is node-wide.</strong> System services on that node go back to the old accounting too.</li>
   </ul>
@@ -579,7 +579,7 @@ WantedBy=sysinit.target</pre>
 
   <h4>The design</h4>
   <ul>
-    <li><strong>Kernel:</strong> every non-root cgroup gets <code>memory.hugetlb_accounting</code>, default 1 (<a href="https://github.com/harche/linux/tree/hugetlb-accounting-opt-out">work-in-progress branch</a>). With 0, hugepages used in that cgroup or below are counted in its parent instead. If that parent is the root, no limit applies, and the root's <code>memory.stat</code> still shows them. Because the count moves up and does not disappear, a cgroup cannot use the switch to get around a limit above it. Like <code>memory.max</code>, the file is set by the parent and cannot be delegated.</li>
+    <li><strong>Kernel:</strong> every non-root cgroup gets <code>memory.hugetlb_accounting</code>, default 1 (<a href="https://lore.kernel.org/all/20261124003145.80705-1-harpatil@redhat.com/">RFC on the kernel mailing lists</a>). With 0, hugepages used in that cgroup or below are counted in its parent instead. If that parent is the root, no limit applies, and the root's <code>memory.stat</code> still shows them. Because the count moves up and does not disappear, a cgroup cannot use the switch to get around a limit above it. Like <code>memory.max</code>, the file is set by the parent and cannot be delegated.</li>
     <li><strong>Kubelet:</strong> when the file exists, it writes 0 on <code>kubepods</code> and on each reserved cgroup it enforces. Nothing else in the kubelet changes.</li>
   </ul>
   <div class="nest">
@@ -683,7 +683,7 @@ WantedBy=sysinit.target</pre>
     <li><strong>Kernel:</strong> the <a href="https://git.kernel.org/torvalds/c/8cba9576df60">commit that added the mount option</a>, its <a href="https://github.com/torvalds/linux/blob/v7.0/Documentation/admin-guide/cgroup-v2.rst?plain=1#L220-L246">documentation</a>, the <a href="https://lore.kernel.org/all/20230928005723.1709119-1-nphamcs@gmail.com/T/">review thread</a> where per-cgroup control was deferred, and the <a href="https://git.kernel.org/torvalds/c/956aeff185e7">fix for the hang</a>.</li>
     <li><strong>systemd:</strong> <a href="https://github.com/systemd/systemd/pull/39486">pull request 39486</a>, which turned the option on, and <a href="https://github.com/systemd/systemd/blob/v259/src/shared/mount-setup.c#L45-L88">the code that mounts cgroup v2</a>.</li>
     <li><strong>runc:</strong> <a href="https://github.com/opencontainers/runc/issues/5258">issue 5258</a> and <a href="https://github.com/opencontainers/runc/pull/5267">pull request 5267</a>, about containers resetting the node's cgroup mount options.</li>
-    <li><strong>Work in progress:</strong> the <a href="https://github.com/harche/systemd/tree/cgroup-hugetlb-accounting-switch">systemd switch</a> and the <a href="https://github.com/harche/linux/tree/hugetlb-accounting-opt-out">kernel switch</a>. Neither has been proposed upstream yet.</li>
+    <li><strong>Proposed upstream:</strong> the systemd change as <a href="https://github.com/systemd/systemd/pull/45018">pull request 45018</a> and the kernel switch as an <a href="https://lore.kernel.org/all/20261124003145.80705-1-harpatil@redhat.com/">RFC on the kernel mailing lists</a>. Neither is merged.</li>
   </ul>
 </section>
 
